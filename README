@@ -1,0 +1,67 @@
+Treebank Semantics --- Meaning Representations from Treebanks
+=============================================================
+
+Treebank Semantics is a system that processes constituency tree
+annotations and returns logic based meaning representations.
+
+The project homepage is: http://www.compling.jp/ajb129/ts.html
+
+The homepage links to documentation that describes the approach and
+implementation in detail.
+
+An example
+==========
+
+Using GNU Prolog (www.gprolog.org), compile as follows:
+
+    gplc --min-size ts2.pl
+
+This will produce an executable named "ts2".
+
+The following illustrates use of the system from the command line:
+
+cat << EOF | ./tree_process.lua | ./ts2
+( (IP-MAT (PP-SCON-CNT-CND (P-CONN If)
+                           (IP-ADV (NP-SBJ;{PERSON} (D a)
+                                                    (N farmer))
+                                   (VBP owns)
+                                   (NP-OB1;{ANIMAL} (D a)
+                                                    (N donkey))))
+          (NP-SBJ;{PERSON} (PRO he))
+          (VBP beats)
+          (NP-OB1;{ANIMAL} (PRO it))
+          (PU .))
+  (ID 75_samples_BUFFALO))
+EOF
+fof(id_75_samples_BUFFALO,axiom,
+  ! [EVENTX4,ANIMALX5,PERSONX6]:
+  (
+    ( isA(ANIMALX5,donkey)
+    & isA(PERSONX6,farmer)
+    & ( isA(EVENTX4,owns)
+      & arg0(EVENTX4) = PERSONX6
+      & arg1(EVENTX4) = ANIMALX5 ) )
+  =>
+    ? [ANIMALX2,PERSONX3,EVENTX1]:
+    (
+      ( ANIMALX2 = ANIMALX5 )
+    &
+      ( PERSONX3 = PERSONX6 )
+    & ( isA(EVENTX1,beats)
+      & arg0(EVENTX1) = PERSONX3
+      & arg1(EVENTX1) = ANIMALX2 ) ) )
+).
+
+For more examples of annotation that the system can process, see the
+Treebank Semantics Parsed Corpus (TSPC) (www.compling.jp/ajb129/tspc.html).
+
+Licence
+=======
+
+All Treebank Semantics sources (c) 2021 Alastair Butler
+
+This work is licensed under the Creative Commons Attribution
+4.0 International License. To view a copy of this license, visit
+http://creativecommons.org/licenses/by/4.0/ or send a letter to
+Creative Commons, PO Box 1866, Mountain View, CA 94042, USA.
+
