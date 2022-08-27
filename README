@@ -39,8 +39,8 @@ fof(id_75_samples_BUFFALO,axiom,
     ( isA(ANIMALX5,donkey)
     & isA(PERSONX6,farmer)
     & ( isA(EVENTX4,owns)
-      & arg0(EVENTX4) = PERSONX6
-      & arg1(EVENTX4) = ANIMALX5 ) )
+      & arg1(EVENTX4) = ANIMALX5
+      & arg0(EVENTX4) = PERSONX6 ) )
   =>
     ? [ANIMALX2,PERSONX3,EVENTX1]:
     (
@@ -48,8 +48,8 @@ fof(id_75_samples_BUFFALO,axiom,
     &
       ( PERSONX3 = PERSONX6 )
     & ( isA(EVENTX1,beats)
-      & arg0(EVENTX1) = PERSONX3
-      & arg1(EVENTX1) = ANIMALX2 ) ) )
+      & arg1(EVENTX1) = ANIMALX2
+      & arg0(EVENTX1) = PERSONX3 ) ) )
 ).
 
 For more examples of annotation that the system can process, see the

@@ -284,6 +284,21 @@ transform( env( _Fs, _Ds, _D, Ls ), pred( S, Args ), P ) :-
   build_predicate( Usable, Args, S, P ).
 
 transform( env( Fs, Ds, D, Ls ),
+           quant( Quant, V, DRef, Norm_exprR, X, Norm_exprNS ),
+           head( Quant, Fresh,
+             body( Fresh,
+               namely( DRef, V,
+                 mov( V, X,
+                   rel( Fs, Ds, Quant,
+                     [ bodyClimb( V, mov( X, 'h', Sct_exprR ) )
+                     , head( 'exists', Fresh, body( Fresh, Sct_exprNS ) )] ) ) ) ) )
+         ) :-
+  find_fresh('.', Fs, Fresh),
+  transform( env( Fs, Ds, D, Ls ), Norm_exprR, Sct_exprR0 ),
+  transform( env( Fs, Ds, D, Ls ), Norm_exprNS, Sct_exprNS ),
+  make_subord( 0, D, Ls, ['h'], clean( 1, ['h'], D, Sct_exprR0 ), Sct_exprR ).
+
+transform( env( Fs, Ds, D, Ls ),
            some( V, DRef, Norm_exprR, X, Norm_exprNS ),
            namely( DRef, V,
                    mov( V, X,
@@ -357,13 +372,15 @@ transform( env( Fs, Ds, D, Ls ), control( Norm_expr ), Sct_expr ) :-
   intersection( ['h'], Ls, C5),
   append(C5, C4, Candidates),
   make_subord( 0, D, Ls, Candidates, clean( 1, ['arg0'], D, Sct_expr0 ), Sct_expr1 ),
-  make_subord( 0, 'arg0', Candidates, [], Sct_expr1, Sct_expr ).
+  subtract( Candidates, ['arg0'], CandidatesWithoutArg0),
+  make_subord( 0, 'arg0', CandidatesWithoutArg0, [], Sct_expr1, Sct_expr ).
 
 transform( env( Fs, Ds, D, Ls ), control2( Norm_expr ), Sct_expr ) :-
   transform( env( Fs, Ds, D, Ls ), Norm_expr, Sct_expr0 ),
   find_with_sub_atom('arg0', Ls, [], Candidates),
   make_subord( 0, D, Ls, Candidates, clean( 1, ['arg0'], D, Sct_expr0 ), Sct_expr1 ),
-  make_subord( 0, 'arg0', Candidates, [], Sct_expr1, Sct_expr ).
+  subtract( Candidates, ['arg0'], CandidatesWithoutArg0),
+  make_subord( 0, 'arg0', CandidatesWithoutArg0, [], Sct_expr1, Sct_expr ).
 
 transform( env( Fs, Ds, D, Ls ), connect( S, Norm_expressions ), Sct_expr ) :-
   sub_atom(S, _, 4, _, 'cnd_'),
@@ -373,7 +390,7 @@ transform( env( Fs, Ds, D, Ls ), connect( S, Norm_expressions ), Sct_expr ) :-
   transform_list( env( Fs, Ds, D, Ls ), Norm_L, Sct_L ),
   find_fresh('.', Fs, Fresh),
   append(Sct_L, [head( 'exists', Fresh, body( Fresh, Sct_Last ) )], Main),
-  Sct_expr = head( 'forall', Fresh, body( Fresh, rel( Fs, Ds, S, Main ) ) ).
+  Sct_expr = head( 'forall_cnd_', Fresh, body( Fresh, rel( Fs, Ds, S, Main ) ) ).
 
 transform( env( Fs, Ds, D, Ls ), connect( S, Norm_expressions ), rel( Fs, Ds, S, Sct_expressions ) ) :-
   transform_list( env( Fs, Ds, D, Ls ), Norm_expressions, Sct_expressions ).
@@ -877,6 +894,17 @@ postprocess_target(Env, rel(R, L0), pred(R, L)) :-
     delete(L1, at(Arg0, LabelArg0), L2),
     (
       (
+         (
+           match('~Tnt', R)
+         ;
+           match('~Tng', R)
+         ),
+         member(at(_, LabelArg1), L2),
+         match('arg1', LabelArg1)
+      ) ->
+      L3 = [at(Arg0, 'darg1')|L2]
+    ;
+      (
          member(at(_, LabelArg1), L2),
          match('arg1', LabelArg1)
       ) ->
@@ -911,7 +939,7 @@ postprocess_target(Env, rel(R, L0), connect(R, L)) :-
   postprocess_target_list(Env, L0, L).
 
 connective('exists', '&') :- !.
-connective('forall', 'cnd_') :- !.
+connective(Quant, 'cnd_') :- sub_atom(Quant, _, 4, _, 'cnd_'), !.
 connective(_, 'unk_').
 
 %------------------------------------------------------------------------------%
@@ -1153,7 +1181,8 @@ totptp( quant( 'exists', [X|Bds], Target ), Column ) :-
   boundtptp( Bds ),
   write( ']:' ),
   totptp( Target, Column ).
-totptp( quant( 'forall', [X|Bds], Target ), Column ) :-
+totptp( quant( S, [X|Bds], Target ), Column ) :-
+  sub_atom(S, _, 4, _, 'cnd_'),
   nl,
   tab(Column),
   write( '! [' ),

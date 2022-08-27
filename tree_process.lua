@@ -6,7 +6,7 @@ exec lua "$0" "$@"
 
 ]]
 
-local freshnames, arguments, referent, fact = {}, {}, 0, 0
+local freshnames, arguments, referent, fact, id_num = {}, {}, 0, 0, 0
 
 function concat(div, expr1, expr2)
   local out
@@ -37,6 +37,11 @@ end
 
 function clean_id(str)
   str = string.gsub(str, "%-", "dAsh")
+  return str
+end
+
+function num_of_id(str)
+  str = string.gsub(str, "_.*$", "")
   return str
 end
 
@@ -86,6 +91,10 @@ end
 function make_link(lab, s, i)
   if string.find(lab, '^%*') and string.find(lab, '%*$') then
     return lab
+  elseif s == '' and string.find(lab, '%-SCON') then
+    fact = fact + 1
+    s = string.format("x_%04d_%04d", id_num, fact)
+    return make_link_full(lab, s, i)
   else
     return make_link_full(lab, s, i)
   end
@@ -103,11 +112,10 @@ function make_link_full(lab, s, i)
   if string.find(lab, '%-SCON') then
     str = concat("_", str, "scon")
   end
-  if string.find(lab, '%-CND') then
-    str = concat("_", str, "cnd")
-  end
   -- selected argument links
-  if string.find(lab, 'SBJ') then
+  if string.find(lab, '%-DSC') then
+    str = "*"
+  elseif string.find(lab, 'SBJ') then
     str = "arg0"
   elseif string.find(lab, '%-DOB1') then
     str = "darg1"
@@ -154,16 +162,45 @@ function make_link_full(lab, s, i)
   elseif string.find(lab, '%-TMP') then
     str = concat("_", str, "tmp")
   end
+  if string.find(lab, '%-CND') then
+    str = concat("_", str, "cnd")
+  end
   -- return result
   if str == 'arg0' or str == 'arg1' or str == 'darg1' or str == 'arg2' or str == 'lgs'
-      or str == 'prd2' or str == 'prd' or str == 'genv' or str == 'foc' then
+      or str == 'prd2' or str == 'prd' or str == 'genv' or str == 'foc' or str == '*' then
     return string.format("'%s'", concat("_", str, s))
   elseif str == '' and s == '' then
-    return string.format("'link%s'", i)
+    -- return string.format("'link%s'", i)
+    fact = fact + 1
+    return string.format("x_%04d_%04d", id_num, fact)
   elseif s == '' then
     return string.format("'%s%s'", str, i)
   else
     return string.format("'%s'", concat("_", str, s))
+  end
+end
+
+function p_yield(expr)
+  if type(expr) == 'table' then
+    if type(expr[1]) == 'table' then
+      local words = ""
+      for i=1,#expr do
+        words = concat("_", words, p_yield(expr[i]))
+      end
+      return words
+    else
+      local words = ""
+      if #expr > 1 and not (expr[1] == "FS") and not (string.find(expr[1], "^PU")) then
+        for i=2,#expr do
+          words = concat("_", words, p_yield(expr[i]))
+        end
+      end
+      return words
+    end
+  else
+    if not(string.find(expr, "^%*")) then
+      return string.format("%s", expr)
+    end
   end
 end
 
@@ -176,8 +213,19 @@ function make_connrole_headword(expr)
       local tag = expr[i][1]
       tag = string.gsub(tag, "^%f[%w]P%f[%W].*", "headword")
       tag = string.gsub(tag, "^%f[%w]CONJ%f[%W].*", "headword")
+      tag = string.gsub(tag, "^%f[%w]RP%f[%W].*", "headword")
+      tag = string.gsub(tag, "^%f[%w]ADV%f[%W].*", "headword")
+      tag = string.gsub(tag, "^%f[%w]NEG%f[%W].*", "headword")
       if tag == "headword" then
         headword = concat("_", headword, expr[i][2])
+      elseif string.find(tag, '^ADVP%-') then
+        headword = concat("_", headword, p_yield(expr[i]))
+      elseif string.find(tag, '^NP%-') then
+        headword = concat("_", headword, p_yield(expr[i]))
+      elseif string.find(tag, '^PP%-') then
+        headword = concat("_", headword, p_yield(expr[i]))
+      elseif string.find(tag, '^PRN') then
+        headword = concat("_", headword, p_yield(expr[i]))
       end
     end
   end
@@ -195,9 +243,9 @@ function process_np(expr, link, mainpart)
   local sort = get_sort(expr[1],'')
   if expr[2] == '*' then
     return dummy_np(link, mainpart)
-  elseif expr[2][1] == 'RPRO' then
-    return string.format("mov('T', %s, %s)", link, mainpart)
   elseif expr[2] == '*T*' then
+    return string.format("mov('T', %s, %s)", link, mainpart)
+  elseif type(expr[2][1]) == 'string' and string.find(expr[2][1], '^RPRO') then
     return string.format("mov('T', %s, %s)", link, mainpart)
   elseif type(expr[2]) == 'string' and string.find(expr[2], "^%*") and string.find(expr[2], "%*$") then
     return string.format("mov('%s', %s, %s)", expr[2], link, mainpart)
@@ -240,6 +288,8 @@ function process_np_full(sort, expr, link, mainpart)
   local available = {}
   -- establish local binding names for restriction
   local localnames = {}
+  -- collect quantification information
+  local quant = ""
   for i=2,#expr do
     if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' then
       local tag = expr[i][1]
@@ -252,9 +302,11 @@ function process_np_full(sort, expr, link, mainpart)
       elseif string.find(tag, '^RD') then
         localnames[i] = string.format("'equals%s'", i-1)
         arguments[localnames[i]] = 1
+      -- elseif string.find(tag, '^Q') then
+      --   localnames[i] = string.format("'quant%s'", i-1)
+      --   arguments[localnames[i]] = 1
       elseif string.find(tag, '^Q') then
-        localnames[i] = string.format("'quant%s'", i-1)
-        arguments[localnames[i]] = 1
+        quant = string.format("'forall_cnd_%s'", expr[i][2])
       elseif string.find(tag, '^NEG') then
         localnames[i] = string.format("'neg%s'", i-1)
         arguments[localnames[i]] = 1
@@ -264,10 +316,19 @@ function process_np_full(sort, expr, link, mainpart)
       elseif string.find(tag, '^NP%-') then
         localnames[i] = make_link(tag, "", i-1)
         arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CONJP') then
+        localnames[i] = make_link(tag, "", i-1)
+        arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
         localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][2][1], '^NP') then
+        localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADJP') then
+        localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADVP') then
         localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
@@ -299,6 +360,9 @@ function process_np_full(sort, expr, link, mainpart)
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
+        localnames[i] = string.format("'prn%s'", i-1)
+        arguments[localnames[i]] = 1
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
@@ -314,12 +378,12 @@ function process_np_full(sort, expr, link, mainpart)
   -- create restriction kernel
   local body, headword = process_np_head(expr, arguments)
   local constant = ''
-  if string.find(body, "^pred%('xxx%d+', %['h'%]%)$") then
+  if string.find(body, "^pred%('x_%d+%d+%d+%d+_%d+%d+%d+%d+', %['h'%]%)$") then
     constant = process_np_constant(expr)
   elseif string.find(process_np_constant(expr), headword) and body == string.format("pred('%s', ['h'])", headword) then
     constant = process_np_constant(expr)
     fact = fact + 1
-    body = string.format("pred('xxx%s', ['h'])", fact)
+    body = string.format("pred('x_%04d_%04d', ['h'])", id_num, fact)
   end
   -- construct rest of the restriction
   for i = #expr, 2, -1 do
@@ -331,10 +395,10 @@ function process_np_full(sort, expr, link, mainpart)
         body = process_adxp(expr[i], localnames[i], body)
       elseif string.find(tag, '^RD') then
         body = string.format("mov('T', %s, %s)", localnames[i], body)
-      elseif string.find(tag, '^Q') then
-        local fresh = "'@e'"
-        freshnames[fresh] = 1
-        body = string.format("someClassic(%s, c('Q','%s'), %s, %s)", fresh, expr[i][2], localnames[i], body)
+      -- elseif string.find(tag, '^Q') then
+      --   local fresh = "'@e'"
+      --   freshnames[fresh] = 1
+      --   body = string.format("someClassic(%s, c('Q','%s'), %s, %s)", fresh, expr[i][2], localnames[i], body)
       elseif string.find(tag, '^NEG') then
         local fresh = "'@e'"
         freshnames[fresh] = 1
@@ -345,10 +409,16 @@ function process_np_full(sort, expr, link, mainpart)
         body = string.format("someClassic(%s, c('NUM','%s'), %s, %s)", fresh, expr[i][2], localnames[i], body)
       elseif string.find(tag, '^NP%-') then
         body = process_np(expr[i], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CONJP') then
+        body = process_pp_conj(expr[i], localnames[i], body)
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
         body = process_np(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][2][1], '^NP') then
         body = process_np(expr[i][2], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADJP') then
+        body = process_adxp(expr[i][#expr[i]], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADVP') then
+        body = process_adxp(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
@@ -360,6 +430,8 @@ function process_np_full(sort, expr, link, mainpart)
       elseif string.find(tag, '^IP%-REL') then
         body = process_ip_rel_connect(expr[i], body)
       elseif string.find(tag, '^IP%-INF%-REL') then
+        body = process_ip_rel_connect(expr[i], body)
+      elseif string.find(tag, '^IP%-EOP') then
         body = process_ip_rel_connect(expr[i], body)
       elseif string.find(tag, '^CP%-THT') then
         body = process_ip_embed_fact(expr[i], localnames[i], body, "FACT")
@@ -373,6 +445,8 @@ function process_np_full(sort, expr, link, mainpart)
         body = process_np(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
+        body = process_multi_sentence_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^FRAG') then
@@ -396,7 +470,7 @@ function process_np_full(sort, expr, link, mainpart)
     dref = string.format("c('%s', '%s')", sort, constant)
   end
   freshnames[fresh] = 1
-  if string.find(body, "^pred%('xxx%d+', %['h'%]%)$") and constant == "" then
+  if string.find(body, "^pred%('x_%d+%d+%d+%d+_%d+%d+%d+%d+', %['h'%]%)$") and constant == "" then
     local determiner = process_np_det(expr)
     mainpart = process_pronominal(fresh, expr, link, mainpart, sort, determiner)
     -- no restriction
@@ -412,10 +486,12 @@ function process_np_full(sort, expr, link, mainpart)
     -- with restriction
     if string.find(mainpart, '^pick') then
       return string.format("someClassic_rest(%s, %s, local(%s, %s), %s, %s)", fresh, dref, make_list(arguments, ""), body, link, mainpart)
-    elseif string.find(body, "^pred%('xxx%d+', %['h'%]%)$") then
+    elseif string.find(body, "^pred%('x_%d+%d+%d+%d+_%d+%d+%d+%d+', %['h'%]%)$") then
       return string.format("namely(%s, %s, mov(%s, %s, %s))", dref, fresh, fresh, link, mainpart)
-    else
+    elseif quant == "" then
       return string.format("some(%s, %s, local(%s, %s), %s, %s)", fresh, dref, make_list(arguments, ""), body, link, mainpart)
+    else
+      return string.format("quant(%s, %s, %s, local(%s, %s), %s, %s)", quant, fresh, dref, make_list(arguments, ""), body, link, mainpart)
     end
   end
 end
@@ -426,12 +502,22 @@ function process_np_head(expr, arguments)
   for i=2,#expr do
     if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^NML') then
       for j=2,#expr[i] do
-        if type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
+        if type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
           conn = concat("_", conn, make_connrole_headword(expr[i][j]))
-        elseif type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^CONJ') then
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^CONJ') then
           conn = concat("_", conn, expr[i][j][2])
-        elseif type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^NEG') then
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^WQ') then
           conn = concat("_", conn, expr[i][j][2])
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^NEG') then
+          conn = concat("_", conn, expr[i][j][2])
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^ADVP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^NP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^PP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^PRN') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
         end
       end
     end
@@ -493,7 +579,7 @@ function process_np_head(expr, arguments)
   end
   if headword == '' then
     fact = fact + 1
-    headword = string.format("xxx%s", fact)
+    headword = string.format("x_%04d_%04d", id_num, fact)
   end
   body = string.format("pred('%s', %s)", headword, listargs)
   -- add conjuncts
@@ -597,7 +683,16 @@ function process_adxp_full(expr, link, mainpart)
       elseif string.find(tag, '^NP') then
         localnames[i] = make_link(tag, "", i-1)
         arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CONJP') then
+        localnames[i] = make_link(tag, "", i-1)
+        arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
+        localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADJP') then
+        localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADVP') then
         localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
@@ -619,6 +714,9 @@ function process_adxp_full(expr, link, mainpart)
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
+        localnames[i] = string.format("'prn%s'", i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
@@ -642,8 +740,14 @@ function process_adxp_full(expr, link, mainpart)
         body = process_adxp(expr[i], localnames[i], body)
       elseif string.find(tag, '^NP') then
         body = process_np(expr[i], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CONJP') then
+        body = process_pp_conj(expr[i], localnames[i], body)
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
         body = process_np(expr[i][#expr[i]], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADJP') then
+        body = process_adxp(expr[i][#expr[i]], localnames[i], body)
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^ADVP') then
+        body = process_adxp(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
@@ -658,6 +762,8 @@ function process_adxp_full(expr, link, mainpart)
         body = process_np(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
+        body = process_multi_sentence_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^FRAG') then
@@ -682,12 +788,22 @@ function process_adxp_head(expr, arguments)
   for i=2,#expr do
     if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^AML') then
       for j=2,#expr[i] do
-        if type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
+        if type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
           conn = concat("_", conn, make_connrole_headword(expr[i][j]))
-        elseif type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^CONJ') then
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^CONJ') then
           conn = concat("_", conn, expr[i][j][2])
-        elseif type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^NEG') then
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^WQ') then
           conn = concat("_", conn, expr[i][j][2])
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and type(expr[i][j][2]) == 'string' and string.find(expr[i][j][1], '^NEG') then
+          conn = concat("_", conn, expr[i][j][2])
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^ADVP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^NP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^PP%-') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
+        elseif type(expr[i][j]) == 'table' and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^PRN') then
+          conn = concat("_", conn, p_yield(expr[i][j]))
         end
       end
     end
@@ -754,7 +870,7 @@ function process_adxp_head(expr, arguments)
   -- construct the restriction
   if headword == '' then
     fact = fact + 1
-    headword = string.format("xxx%s", fact)
+    headword = string.format("x_%04d_%04d", id_num, fact)
   end
   body = string.format("pred('%s', %s)", headword, make_list(arguments, ""))
   -- add conjuncts
@@ -770,7 +886,7 @@ function process_adxp_head(expr, arguments)
         elseif type(expr[i][j][#expr[i][j]][1]) == 'string' and string.find(expr[i][j][#expr[i][j]][1], '^ADVP') and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
           body = process_adxp(expr[i][j][#expr[i][j]], string.format("'conj%s'", conj_links[j]), body)
         elseif type(expr[i][j][#expr[i][j]][1]) == 'string' and string.find(expr[i][j][#expr[i][j]][1], '^PP') and type(expr[i][j][1]) == 'string' and string.find(expr[i][j][1], '^CONJP') then
-          body = process_np(expr[i][j][#expr[i][j]][#expr[i][j][#expr[i][j]]], string.format("'conj%s_%s'", conj_links[i], make_connrole_headword(expr[i][j][#expr[i][j]])), body)
+          body = process_np(expr[i][j][#expr[i][j]][#expr[i][j][#expr[i][j]]], string.format("'conj%s_%s'", conj_links[j], make_connrole_headword(expr[i][j][#expr[i][j]])), body)
         end
       end
       if conjn == 0 then
@@ -814,11 +930,7 @@ function process_clause_full(expr, arguments, clausetype)
   for i=2,#expr do
     if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' then
       local tag = expr[i][1]
-      if string.find(tag, '^IP%-PPL%-SEQ') then
-        localnames[i] = "'seq'"
-        available[i] = copy_list(arguments)
-        arguments[localnames[i]] = 1
-      elseif string.find(tag, '^IP%-PPL%-CAT') then
+      if string.find(tag, '^IP%-PPL%-CAT') then
         localnames[i] = "'cat'"
         available[i] = copy_list(arguments)
         arguments[localnames[i]] = 1
@@ -906,6 +1018,10 @@ function process_clause_full(expr, arguments, clausetype)
         localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
         available[i] = copy_list(arguments)
         arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-ADV') then
+        localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
+        available[i] = copy_list(arguments)
+        arguments[localnames[i]] = 1
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
         localnames[i] = make_link(tag, make_connrole_headword(expr[i]), i-1)
         arguments[localnames[i]] = 1
@@ -913,6 +1029,9 @@ function process_clause_full(expr, arguments, clausetype)
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
+        localnames[i] = string.format("'prn%s'", i-1)
+        arguments[localnames[i]] = 1
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
         localnames[i] = string.format("'prn%s'", i-1)
         arguments[localnames[i]] = 1
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
@@ -936,9 +1055,7 @@ function process_clause_full(expr, arguments, clausetype)
   for i = #expr, 2, -1 do
     if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' then
       local tag = expr[i][1]
-      if string.find(tag, '^IP%-PPL%-SEQ') then
-        body = process_ip_control_fact(expr[i], localnames[i], body, available[i], "2", "SEQ")
-      elseif string.find(tag, '^IP%-PPL%-CAT') then
+      if string.find(tag, '^IP%-PPL%-CAT') then
         body = process_ip_control_fact(expr[i], localnames[i], body, available[i], "2", "CAT")
       elseif string.find(tag, '^MD') then
         local fresh = "'@e'"
@@ -994,6 +1111,12 @@ function process_clause_full(expr, arguments, clausetype)
         body = process_ip_control_connect(expr[i][#expr[i]], body, available[i], localnames[i], "2")
       elseif string.find(tag, '^PP%-SCON') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-PPL') then
         body = process_ip_control_connect(expr[i][#expr[i]], body, available[i], localnames[i], "")
+      elseif string.find(tag, '^PP%-SCON') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-INF3') then
+        body = process_ip_embed_connect(expr[i][#expr[i]], body, localnames[i])
+      elseif string.find(tag, '^PP%-SCON') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-INF2') then
+        body = process_ip_control_connect(expr[i][#expr[i]], body, available[i], localnames[i], "2")
+      elseif string.find(tag, '^PP%-SCON') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-INF') then
+        body = process_ip_control_connect(expr[i][#expr[i]], body, available[i], localnames[i], "")
       elseif string.find(tag, '^PP%-SCON') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-ADV') then
         body = process_ip_embed_connect(expr[i][#expr[i]], body, localnames[i])
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
@@ -1008,12 +1131,16 @@ function process_clause_full(expr, arguments, clausetype)
         body = process_ip_control_fact(expr[i][#expr[i]], localnames[i], body, available[i], "2", "FACT")
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-PPL') then
         body = process_ip_control_fact(expr[i][#expr[i]], localnames[i], body, available[i], "", "FACT")
+      elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP%-ADV') then
+        body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PP') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
         body = process_multi_sentence_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
         body = process_np(expr[i][#expr[i]], localnames[i], body)
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
+      elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^multi%-sentence') then
+        body = process_multi_sentence_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^CP') then
         body = process_ip_embed_fact(expr[i][#expr[i]], localnames[i], body, "FACT")
       elseif string.find(tag, '^PRN') and type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^FRAG') then
@@ -1063,8 +1190,6 @@ function process_clause_kernel(expr, sort, arguments)
     for i=2,#expr do
       if type(expr[i]) == 'table' and type(expr[i][1]) == 'string' then
         local tag = expr[i][1]
-        -- headword includes EX
-        tag = string.gsub(tag, "^%f[%w]EX%f[%W].*", "headword")
         -- headword includes TO
         tag = string.gsub(tag, "^%f[%w]TO%f[%W].*", "headword")
         -- headword is HAVE
@@ -1099,15 +1224,8 @@ function process_clause_kernel(expr, sort, arguments)
       end
     end
     if headword == '' then
-      -- when there is no headword and the clause is a fragment
-      if type(expr[1]) == 'string' and string.find(expr[1], '^FRAG') then
-       fact = fact + 1
-       headword = string.format("frag%s", fact)
-      -- when there is still no headword, pick a default
-      else
-       fact = fact + 1
-       headword = string.format("xxx%s", fact)
-      end
+      fact = fact + 1
+      headword = string.format("x_%04d_%04d", id_num, fact)
     end
     -- establish fresh source for event binding
     local fresh = "'.event'"
@@ -1124,7 +1242,7 @@ end
 
 function process_ip_rel_connect(expr, mainpart)
   local arguments = {}
-  if string.find(mainpart, "^pred%('xxx%d+', %['h'%]%)$") then
+  if string.find(mainpart, "^pred%('x_%d+%d+%d+%d+_%d+%d+%d+%d+', %['h'%]%)$") then
     return string.format("mov('h' ,'T', embed(%s))", process_clause(expr, arguments))
   else
     return string.format("connect('&', [%s, mov('h' ,'T', embed(%s))])", mainpart, process_clause(expr, arguments))
@@ -1134,26 +1252,38 @@ end
 function process_ip_control_connect(expr, mainpart, inherited, connect, version)
   local control_candidates = find_control_candidates(inherited)
   local arguments = {}
-  if string.find(mainpart, "^pred%('xxx%d+', %['h'%]%)$") then
+  if string.find(mainpart, "^pred%('x_%d+%d+%d+%d+_%d+%d+%d+%d+', %['h'%]%)$") then
     -- preserve subject if present in higher clause layer
     if version == "2" and control_candidates["arg0"] then
+      -- subject control forced and there is a subject controller
       arguments["'arg0'"] = 1
       return string.format("control2(%s)", process_clause(expr, arguments))
+    elseif version == "2" then
+      -- subject control forced but there is no subject controller
+      return string.format("embed(%s)", process_clause(expr, arguments))
     elseif control_candidates["arg0"] or control_candidates["arg1"] or control_candidates["arg2"] or control_candidates["h"] then
+      -- basic control
       arguments["'arg0'"] = 1
       return string.format("control(%s)", process_clause(expr, arguments))
     else
+      -- no control
       return string.format("embed(%s)", process_clause(expr, arguments))
     end
   else
     -- preserve subject if present in higher clause layer
     if version == "2" and control_candidates["arg0"] then
+      -- subject control forced and there is a subject controller
       arguments["'arg0'"] = 1
       return string.format("connect(%s, [control2(%s), %s])", connect, process_clause(expr, arguments), mainpart)
+    elseif version == "2" then
+      -- subject control forced but there is no subject controller
+      return string.format("connect(%s, [embed(%s), %s])", connect, process_clause(expr, arguments), mainpart)
     elseif control_candidates["arg0"] or control_candidates["arg1"] or control_candidates["arg2"] or control_candidates["h"] then
+      -- basic control
       arguments["'arg0'"] = 1
       return string.format("connect(%s, [control(%s), %s])", connect, process_clause(expr, arguments), mainpart)
     else
+      -- no control
       return string.format("connect(%s, [embed(%s), %s])", connect, process_clause(expr, arguments), mainpart)
     end
   end
@@ -1175,7 +1305,12 @@ function process_ip_control_fact(expr, localname, mainpart, inherited, version, 
   dref = string.format("x('%s', %s)", sort, referent)
   -- increment fact for fresh fact statement
   fact = fact + 1
-  if localname == "'arg0'" or localname == "'prd2'" or localname == "'prd'" then
+  if string.find(localname, "arg0") and control_candidates["arg0"] then
+    -- subject control forced and there is a subject controller
+    local arguments = {}
+    arguments["'arg0'"] = 1
+    return string.format("someFact(%s, 'fact%s', %s, control2(%s), %s, %s)", fresh, fact, dref, process_clause(expr, arguments), localname, mainpart)
+  elseif string.find(localname, "arg0") or string.find(localname, "prd") then
     local arguments = {}
     return string.format("someFact(%s, 'fact%s', %s, embed(%s), %s, %s)", fresh, fact, dref, process_clause(expr, arguments, clausetype), localname, mainpart)
   else
@@ -1255,7 +1390,7 @@ function process_ip_car(expr, localname, mainpart, sort)
   -- reset locality
   local arguments = {}
   fact = fact + 1
-  return string.format("someClassic_rest(%s, %s, connect('&', [pred('xxx%s', ['h']), mov('h' ,'T', embed(%s))]), %s, %s)", fresh, dref, fact, process_clause(expr, arguments), localname, mainpart)
+  return string.format("someClassic_rest(%s, %s, connect('&', [pred('x_%04d_%04d', ['h']), mov('h' ,'T', embed(%s))]), %s, %s)", fresh, dref, id_num, fact, process_clause(expr, arguments), localname, mainpart)
 end
 
 function process_clause_iml(expr, arguments)
@@ -1265,6 +1400,18 @@ function process_clause_iml(expr, arguments)
       conn = concat("_", conn, make_connrole_headword(expr[i]))
     elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^CONJ') then
       conn = concat("_", conn, expr[i][2])
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^WQ') then
+      conn = concat("_", conn, expr[i][2])
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^NEG') then
+      conn = concat("_", conn, expr[i][2])
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^ADVP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^NP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^PP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^PRN') then
+      conn = concat("_", conn, p_yield(expr[i]))
     end
   end
   for i=2,#expr do
@@ -1308,40 +1455,50 @@ function process_pp_conj(expr, link, main)
       conn = concat("_", conn, make_connrole_headword(expr[i]))
     elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^CONJ') then
       conn = concat("_", conn, expr[i][2])
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^WQ') then
+      conn = concat("_", conn, expr[i][2])
     elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and type(expr[i][2]) == 'string' and string.find(expr[i][1], '^NEG') then
       conn = concat("_", conn, expr[i][2])
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^ADVP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^NP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^PP%-') then
+      conn = concat("_", conn, p_yield(expr[i]))
+    elseif type(expr[i]) == 'table' and type(expr[i][1]) == 'string' and string.find(expr[i][1], '^PRN') then
+      conn = concat("_", conn, p_yield(expr[i]))
     end
   end
   for i=2,#expr do
-    if type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
-      conjn = conjn + 1
-      conj_links[i] = conjn
-      arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i])))] = 1
-    elseif type(expr[i][#expr[i]][1]) == 'string' and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^NP') then
+    if type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^PP') and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^NP') then
       conjn = conjn + 1
       conj_links[i] = conjn
       arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i][#expr[i]])))] = 1
+    elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^PP') and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^IP') then
+      conjn = conjn + 1
+      conj_links[i] = conjn
+      arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i][#expr[i]])))] = 1
+    elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
+      conjn = conjn + 1
+      conj_links[i] = conjn
+      arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i])))] = 1
     elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
       conjn = conjn + 1
       conj_links[i] = conjn
       arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i])))] = 1
-    elseif type(expr[i][#expr[i]][1]) == 'string' and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^IP') then
-      conjn = conjn + 1
-      conj_links[i] = conjn
-      arguments[string.format("'%s'", concat("_", string.format("conj%s", conjn), make_connrole_headword(expr[i][#expr[i]])))] = 1
     end
   end
   -- create the kernel of the conjunct contribution
   local body = string.format("pred('%s', %s)", conn, make_list(arguments, ""))
   for i = #expr, 2, -1 do
-    if type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
-      body = process_np(expr[i][#expr[i]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i]))), body)
-    elseif type(expr[i][#expr[i]][1]) == 'string' and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^NP') then
+    if type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^PP') and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^NP') then
       body = process_np(expr[i][#expr[i]][#expr[i][#expr[i]]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i][#expr[i]]))), body)
+    elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^PP') and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^IP') then
+      body = process_ip_embed_fact(expr[i][#expr[i]][#expr[i][#expr[i]]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i][#expr[i]]))), body, "FACT")
+    elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^NP') then
+      body = process_np(expr[i][#expr[i]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i]))), body)
     elseif type(expr[i][#expr[i]][1]) == 'string' and string.find(expr[i][#expr[i]][1], '^IP') then
       body = process_ip_embed_fact(expr[i][#expr[i]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i]))), body, "FACT")
-    elseif type(expr[i][#expr[i]][1]) == 'string' and type(expr[i][#expr[i]][#expr[i][#expr[i]]][1]) == 'string' and string.find(expr[i][#expr[i]][#expr[i][#expr[i]]][1], '^IP') then
-      body = process_ip_embed_fact(expr[i][#expr[i]][#expr[i][#expr[i]]], string.format("'%s'", concat("_", string.format("conj%s", conj_links[i]), make_connrole_headword(expr[i][#expr[i]]))), body, "FACT")
     end
   end
   -- add the contribution to main
@@ -1414,12 +1571,14 @@ end
 
 for i=1,#forest do
   freshnames, arguments, referent = {}, {}, 0
-  local id, body = forest[i][1], process_clause(forest[i][2], arguments)
+  local id = forest[i][1]
   if string.find(id, ';') then
     id = clean_id(string.sub(id, 1, string.find(id, ';')-1))
   else
     id = clean_id(id)
   end
+  fact, id_num = 0, num_of_id(id)
+  local body = process_clause(forest[i][2], arguments)
   local punc = ","
   if i == #forest then
     punc = "."
